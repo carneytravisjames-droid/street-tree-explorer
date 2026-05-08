@@ -7,7 +7,7 @@
 // Live source — Portland's open data Feature Service for Active Street Trees.
 // (When the data pipeline runs, swap to a hosted Parquet/PMTiles file.)
 const FEATURE_SERVER =
-  "https://www.portlandmaps.com/arcgis/rest/services/Public/Trees_Inventory/MapServer/0";
+  "https://www.portlandmaps.com/arcgis/rest/services/Public/Parks_Street_Tree_Inventory_Active/MapServer/0";
 
 // Replace with your deployed Worker URL once you're ready (e.g. https://chat.killtimber.com)
 const CHAT_API = "/api/chat";
