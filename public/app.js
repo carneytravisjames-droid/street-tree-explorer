@@ -7,14 +7,15 @@
 // Live source — Portland's open data Feature Service for Active Street Trees.
 // (When the data pipeline runs, swap to a hosted Parquet/PMTiles file.)
 const FEATURE_SERVER =
-  "https://www.portlandmaps.com/arcgis/rest/services/Public/Parks_Street_Tree_Inventory_Active/MapServer/0";
+  "https://www.portlandmaps.com/arcgis/rest/services/Public/Parks_Street_Tree_Inventory_Active/MapServer/4";
 
 // Replace with your deployed Worker URL once you're ready (e.g. https://chat.killtimber.com)
 const CHAT_API = "/api/chat";
 
-// Initial sample size. ~10–15k points renders smoothly without tiling.
-// Increase / paginate once you wire up the Parquet pipeline.
-const SAMPLE_LIMIT = 12000;
+// MaxRecordCount on Portland's MapServer is 2000.
+// We page through to load up to TARGET_TOTAL records.
+const PAGE_SIZE = 2000;
+const TARGET_TOTAL = 20000;
 
 // ── Map ──────────────────────────────────────────────────────────────
 const map = new maplibregl.Map({
@@ -61,21 +62,57 @@ let allFeatures = []; // GeoJSON features, full set
 let filteredIds = null; // Set<string> | null (null = show all)
 
 async function loadTrees() {
-  const url =
-    `${FEATURE_SERVER}/query?` +
-    new URLSearchParams({
+  // Page through the FeatureServer 2000 records at a time. Try GeoJSON
+  // first; fall back to Esri JSON for older MapServers that don't support it.
+  const all = [];
+  let offset = 0;
+
+  while (offset < TARGET_TOTAL) {
+    const params = {
       where: "1=1",
-      outFields: "OBJECTID,Genus,Species,Common,DBH,Condition,Address,Site_Type,Inventory_",
+      outFields:
+        "OBJECTID,Genus,Species,Common,DBH,Condition,Address,Site_Type",
       returnGeometry: "true",
       outSR: "4326",
       f: "geojson",
-      resultRecordCount: SAMPLE_LIMIT,
-    });
+      resultRecordCount: PAGE_SIZE,
+      resultOffset: offset,
+    };
+    let url = `${FEATURE_SERVER}/query?` + new URLSearchParams(params);
+    let res = await fetch(url);
 
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Feature service: ${res.status}`);
-  const fc = await res.json();
-  return fc.features || [];
+    // Fallback to Esri JSON if GeoJSON is not supported on this layer.
+    if (!res.ok) {
+      params.f = "json";
+      url = `${FEATURE_SERVER}/query?` + new URLSearchParams(params);
+      res = await fetch(url);
+      if (!res.ok) throw new Error(`Feature service: ${res.status}`);
+      const data = await res.json();
+      const feats = (data.features || []).map(esriToGeoJSON);
+      if (!feats.length) break;
+      all.push(...feats);
+      if (feats.length < PAGE_SIZE) break;
+    } else {
+      const fc = await res.json();
+      const feats = fc.features || [];
+      if (!feats.length) break;
+      all.push(...feats);
+      if (feats.length < PAGE_SIZE) break;
+    }
+
+    offset += PAGE_SIZE;
+  }
+  return all;
+}
+
+function esriToGeoJSON(f) {
+  return {
+    type: "Feature",
+    geometry: f.geometry
+      ? { type: "Point", coordinates: [f.geometry.x, f.geometry.y] }
+      : null,
+    properties: f.attributes || {},
+  };
 }
 
 function addLayers(features) {
