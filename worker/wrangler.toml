@@ -1,0 +1,9 @@
+name = "street-tree-chat"
+main = "src/index.js"
+compatibility_date = "2026-05-01"
+
+# Set with: wrangler secret put ANTHROPIC_API_KEY
+# (do not commit the key)
+
+[vars]
+MODEL = "claude-haiku-4-5-20251001"
