@@ -4,17 +4,101 @@
 // returns a structured filter the browser applies locally.
 
 // ── Config ────────────────────────────────────────────────────────────
-// Live source — Portland's Urban Forestry tree layers (All Trees layer).
 const FEATURE_SERVER =
   "https://www.portlandmaps.com/arcgis/rest/services/Public/Parks_UF_Tree_Layers/MapServer/12";
 
-// Replace with your deployed Worker URL once you're ready (e.g. https://chat.killtimber.com)
-const CHAT_API = "/api/chat";
+// Deployed Worker URL — handles AI chat requests.
+const CHAT_API = "https://street-tree-chat.killtimber1.workers.dev";
 
 // MaxRecordCount on Portland's MapServer is 2000.
-// We page through to load up to TARGET_TOTAL records.
 const PAGE_SIZE = 2000;
 const TARGET_TOTAL = 20000;
+
+// ── Auth ─────────────────────────────────────────────────────────────
+const AUTH_KEY = "stx_pw";
+let appPassword = localStorage.getItem(AUTH_KEY) || "";
+
+function injectAuthOverlay() {
+  const overlay = document.createElement("div");
+  overlay.id = "auth-overlay";
+  overlay.innerHTML = `
+    <div class="auth-card">
+      <div class="auth-mark"></div>
+      <h1>Street Tree Explorer</h1>
+      <p>Private preview. Enter password to continue.</p>
+      <form id="auth-form">
+        <input type="password" id="auth-input" placeholder="Password" autocomplete="off" />
+        <button type="submit">Enter</button>
+      </form>
+      <div id="auth-error"></div>
+    </div>`;
+  document.body.appendChild(overlay);
+
+  const style = document.createElement("style");
+  style.textContent = `
+    #auth-overlay { position: fixed; inset: 0; z-index: 1000; background: var(--bg); display: grid; place-items: center; }
+    #auth-overlay.hidden { opacity: 0; visibility: hidden; transition: opacity 0.3s, visibility 0.3s; }
+    .auth-card { background: var(--surface-strong); backdrop-filter: blur(24px) saturate(140%); border: 1px solid var(--border); padding: 40px; border-radius: 20px; box-shadow: var(--shadow); max-width: 360px; width: 90%; text-align: center; }
+    .auth-mark { width: 48px; height: 48px; margin: 0 auto 20px; border-radius: 14px; background: radial-gradient(circle at 30% 30%, var(--moss) 0%, var(--moss-deep) 70%); }
+    .auth-card h1 { font-size: 18px; margin: 0 0 6px; font-weight: 600; }
+    .auth-card p { color: var(--text-faint); font-size: 13px; margin: 0 0 24px; }
+    #auth-form { display: flex; gap: 8px; }
+    #auth-input { flex: 1; background: var(--bg-elev); border: 1px solid var(--border-strong); border-radius: 10px; padding: 12px 14px; color: var(--text); font: inherit; font-size: 14px; outline: none; }
+    #auth-input:focus { border-color: var(--moss); }
+    #auth-form button { padding: 12px 20px; border: none; border-radius: 10px; background: var(--moss); color: var(--bg); font: inherit; font-weight: 600; cursor: pointer; }
+    #auth-form button:hover { background: #6dc193; }
+    #auth-error { color: var(--rust); font-size: 12px; margin-top: 12px; min-height: 16px; }
+  `;
+  document.head.appendChild(style);
+}
+
+async function verifyPassword(pw) {
+  try {
+    const res = await fetch(CHAT_API, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-App-Password": pw },
+      body: JSON.stringify({ question: "" }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function ensureAuth() {
+  if (appPassword) {
+    const ok = await verifyPassword(appPassword);
+    if (ok) return;
+    localStorage.removeItem(AUTH_KEY);
+    appPassword = "";
+  }
+  injectAuthOverlay();
+  const form = document.getElementById("auth-form");
+  const input = document.getElementById("auth-input");
+  const err = document.getElementById("auth-error");
+  input.focus();
+  return new Promise((resolve) => {
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const pw = input.value.trim();
+      if (!pw) return;
+      err.textContent = "";
+      input.disabled = true;
+      const ok = await verifyPassword(pw);
+      input.disabled = false;
+      if (!ok) {
+        err.textContent = "Incorrect password.";
+        input.select();
+        return;
+      }
+      appPassword = pw;
+      localStorage.setItem(AUTH_KEY, pw);
+      document.getElementById("auth-overlay").classList.add("hidden");
+      setTimeout(() => document.getElementById("auth-overlay").remove(), 300);
+      resolve();
+    });
+  });
+}
 
 // ── Map ──────────────────────────────────────────────────────────────
 const map = new maplibregl.Map({
@@ -49,7 +133,7 @@ const map = new maplibregl.Map({
       { id: "labels", type: "raster", source: "labels" },
     ],
   },
-  center: [-122.6765, 45.5231], // Portland
+  center: [-122.6765, 45.5231],
   zoom: 11.5,
   pitch: 0,
 });
@@ -57,12 +141,10 @@ const map = new maplibregl.Map({
 map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-left");
 
 // ── Data ─────────────────────────────────────────────────────────────
-let allFeatures = []; // GeoJSON features, full set
-let filteredIds = null; // Set<string> | null (null = show all)
+let allFeatures = [];
+let filteredIds = null;
 
 async function loadTrees() {
-  // Page through the FeatureServer 2000 records at a time. Try GeoJSON
-  // first; fall back to Esri JSON for older MapServers that don't support it.
   const all = [];
   let offset = 0;
 
@@ -79,7 +161,6 @@ async function loadTrees() {
     let url = `${FEATURE_SERVER}/query?` + new URLSearchParams(params);
     let res = await fetch(url);
 
-    // Fallback to Esri JSON if GeoJSON is not supported on this layer.
     if (!res.ok) {
       params.f = "json";
       url = `${FEATURE_SERVER}/query?` + new URLSearchParams(params);
@@ -124,10 +205,7 @@ function addLayers(features) {
     type: "circle",
     source: "trees",
     paint: {
-      "circle-radius": [
-        "interpolate", ["linear"], ["zoom"],
-        10, 1.2, 13, 3, 16, 8, 19, 18,
-      ],
+      "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 1.2, 13, 3, 16, 8, 19, 18],
       "circle-color": [
         "match",
         ["coalesce", ["get", "Condition"], "Unknown"],
@@ -143,24 +221,19 @@ function addLayers(features) {
     },
   });
 
-  // Click → popup
   map.on("click", "trees-glow", (e) => {
     const f = e.features[0];
     const p = f.properties;
     const html = `
       <div style="font: 13px/1.5 Inter, sans-serif; color: #ecf0ec; min-width: 180px;">
         <div style="font-weight: 600; margin-bottom: 4px;">${p.Common || p.Species || "Tree"}</div>
-        <div style="color: #a0aaa3; font-size: 11px; margin-bottom: 6px;">
-          ${p.Genus || ""} ${p.Species || ""}
-        </div>
+        <div style="color: #a0aaa3; font-size: 11px; margin-bottom: 6px;">${p.Genus || ""} ${p.Species || ""}</div>
         <div><b>DBH:</b> ${p.DBH || "—"}″</div>
         <div><b>Condition:</b> ${p.Condition || "—"}</div>
         <div><b>Address:</b> ${p.Address || "—"}</div>
       </div>`;
     new maplibregl.Popup({ closeButton: false, className: "tree-popup" })
-      .setLngLat(e.lngLat)
-      .setHTML(html)
-      .addTo(map);
+      .setLngLat(e.lngLat).setHTML(html).addTo(map);
   });
   map.on("mouseenter", "trees-glow", () => (map.getCanvas().style.cursor = "pointer"));
   map.on("mouseleave", "trees-glow", () => (map.getCanvas().style.cursor = ""));
@@ -169,10 +242,8 @@ function addLayers(features) {
 function applyFilter(filterFn) {
   const features = filterFn ? allFeatures.filter(filterFn) : allFeatures;
   filteredIds = filterFn ? new Set(features.map((f) => f.properties.OBJECTID)) : null;
-
   map.getSource("trees").setData({ type: "FeatureCollection", features });
   updateStats(features);
-
   if (filterFn && features.length > 0) {
     const bounds = new maplibregl.LngLatBounds();
     features.forEach((f) => bounds.extend(f.geometry.coordinates));
@@ -181,11 +252,8 @@ function applyFilter(filterFn) {
 }
 
 function updateStats(features) {
-  document.getElementById("visible-count").textContent =
-    features.length.toLocaleString();
-  const species = new Set(
-    features.map((f) => f.properties.Species).filter(Boolean)
-  );
+  document.getElementById("visible-count").textContent = features.length.toLocaleString();
+  const species = new Set(features.map((f) => f.properties.Species).filter(Boolean));
   document.getElementById("species-count").textContent = species.size.toLocaleString();
 }
 
@@ -215,29 +283,29 @@ composer.addEventListener("submit", async (e) => {
   try {
     const res = await fetch(CHAT_API, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-App-Password": appPassword },
       body: JSON.stringify({ question: q }),
     });
 
+    if (res.status === 401) {
+      localStorage.removeItem(AUTH_KEY);
+      location.reload();
+      return;
+    }
     if (!res.ok) throw new Error(`Chat API: ${res.status}`);
     const data = await res.json();
 
-    // Expected shape: { filter: { genus?, species?, condition?, dbh_min?, dbh_max?, common? }, summary: string }
     thinking.remove();
     if (data.filter) applyFilter(buildFilterFn(data.filter));
     addMessage("assistant", data.summary || "Done — map updated.");
   } catch (err) {
     thinking.remove();
-    // Local fallback: simple keyword match so the demo works without the Worker.
     const localFilter = localFallback(q);
     if (localFilter) {
       applyFilter(localFilter.fn);
       addMessage("assistant", `(offline mode) Filtered to ${localFilter.label}.`);
     } else {
-      addMessage(
-        "assistant",
-        "I need the chat API to be deployed for that. (See README.) Try a keyword like 'maple' or 'poor condition' for a local demo."
-      );
+      addMessage("assistant", "Couldn't reach the AI. Try a keyword like 'maple' or 'poor condition' for a local match.");
     }
   }
 });
@@ -255,36 +323,25 @@ function buildFilterFn(filter) {
   };
 }
 
-const ciEq = (a, b) =>
-  String(a || "").toLowerCase().trim() === String(b || "").toLowerCase().trim();
-const ciIncludes = (a, b) =>
-  String(a || "").toLowerCase().includes(String(b || "").toLowerCase());
+const ciEq = (a, b) => String(a || "").toLowerCase().trim() === String(b || "").toLowerCase().trim();
+const ciIncludes = (a, b) => String(a || "").toLowerCase().includes(String(b || "").toLowerCase());
 
-// Quick local-only filter so the page is useful before the Worker is deployed.
 function localFallback(q) {
   const lower = q.toLowerCase();
   const conditions = ["good", "fair", "poor", "dead"];
   for (const c of conditions) {
     if (lower.includes(c + " condition") || lower.includes("in " + c)) {
-      return {
-        label: `${c} condition`,
-        fn: (f) => ciEq(f.properties.Condition, c[0].toUpperCase() + c.slice(1)),
-      };
+      return { label: `${c} condition`, fn: (f) => ciEq(f.properties.Condition, c[0].toUpperCase() + c.slice(1)) };
     }
   }
-  // genus keyword
   const m = lower.match(/\b(maple|oak|cherry|plum|magnolia|pine|fir|elm|ash|cedar|dogwood|linden|birch)s?\b/);
-  if (m) {
-    return {
-      label: `${m[1]}s`,
-      fn: (f) => ciIncludes(f.properties.Common, m[1]),
-    };
-  }
+  if (m) return { label: `${m[1]}s`, fn: (f) => ciIncludes(f.properties.Common, m[1]) };
   return null;
 }
 
 // ── Boot ─────────────────────────────────────────────────────────────
 map.on("load", async () => {
+  await ensureAuth();
   try {
     allFeatures = await loadTrees();
     addLayers(allFeatures);
