@@ -4,10 +4,9 @@
 // returns a structured filter the browser applies locally.
 
 // ── Config ────────────────────────────────────────────────────────────
-// Live source — Portland's open data Feature Service for Active Street Trees.
-// (When the data pipeline runs, swap to a hosted Parquet/PMTiles file.)
+// Live source — Portland's Urban Forestry tree layers (All Trees layer).
 const FEATURE_SERVER =
-  "https://www.portlandmaps.com/arcgis/rest/services/Public/Parks_Street_Tree_Inventory_Active/MapServer/4";
+  "https://www.portlandmaps.com/arcgis/rest/services/Public/Parks_UF_Tree_Layers/MapServer/12";
 
 // Replace with your deployed Worker URL once you're ready (e.g. https://chat.killtimber.com)
 const CHAT_API = "/api/chat";
@@ -70,8 +69,7 @@ async function loadTrees() {
   while (offset < TARGET_TOTAL) {
     const params = {
       where: "1=1",
-      outFields:
-        "OBJECTID,Genus,Species,Common,DBH,Condition,Address,Site_Type",
+      outFields: "*",
       returnGeometry: "true",
       outSR: "4326",
       f: "geojson",
