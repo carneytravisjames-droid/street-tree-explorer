@@ -46,6 +46,20 @@ html, body {
 }
 .maplibregl-ctrl-attrib a { color: var(--text-dim) !important; }
 
+/* Dark popup */
+.tree-popup .maplibregl-popup-content {
+  background: rgba(13, 20, 16, 0.95) !important;
+  backdrop-filter: blur(16px) saturate(140%);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  border: 1px solid var(--border) !important;
+  border-radius: 12px !important;
+  padding: 14px 16px !important;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5) !important;
+  color: var(--text) !important;
+}
+.tree-popup .maplibregl-popup-tip { border-top-color: rgba(13, 20, 16, 0.95) !important; border-bottom-color: rgba(13, 20, 16, 0.95) !important; }
+.tree-popup .maplibregl-popup-close-button { color: var(--text-faint) !important; font-size: 18px !important; padding: 4px 8px !important; }
+
 /* ── Top bar ────────────────────────────────── */
 .topbar {
   position: fixed;
