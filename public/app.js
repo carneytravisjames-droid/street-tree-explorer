@@ -1,18 +1,13 @@
 // Street Tree Explorer — front-end app
-// Loads Portland Street Tree Inventory from the City's ArcGIS FeatureServer,
-// renders on a MapLibre map, and routes chat questions to a Worker that
-// returns a structured filter the browser applies locally.
 
 // ── Config ────────────────────────────────────────────────────────────
 const FEATURE_SERVER =
   "https://www.portlandmaps.com/arcgis/rest/services/Public/Parks_UF_Tree_Layers/MapServer/12";
 
-// Deployed Worker URL — handles AI chat requests.
 const CHAT_API = "https://street-tree-chat.killtimber1.workers.dev";
 
-// MaxRecordCount on Portland's MapServer is 2000.
 const PAGE_SIZE = 2000;
-const TARGET_TOTAL = 20000;
+const TARGET_TOTAL = 12000;
 
 // ── Auth ─────────────────────────────────────────────────────────────
 const AUTH_KEY = "stx_pw";
@@ -22,10 +17,75 @@ function injectAuthOverlay() {
   const overlay = document.createElement("div");
   overlay.id = "auth-overlay";
   overlay.innerHTML = `
+    <svg class="forest-scene" viewBox="0 0 1200 600" preserveAspectRatio="xMidYMax slice" aria-hidden="true">
+      <defs>
+        <linearGradient id="sky" x1="0" x2="0" y1="0" y2="1">
+          <stop offset="0%" stop-color="#070d0a"/>
+          <stop offset="55%" stop-color="#0c1612"/>
+          <stop offset="100%" stop-color="#1a2520"/>
+        </linearGradient>
+        <linearGradient id="fog" x1="0" x2="0" y1="0" y2="1">
+          <stop offset="0%" stop-color="rgba(40,60,50,0)"/>
+          <stop offset="100%" stop-color="rgba(8,14,11,0.95)"/>
+        </linearGradient>
+        <radialGradient id="moon" cx="80%" cy="20%" r="35%">
+          <stop offset="0%" stop-color="rgba(180,200,180,0.18)"/>
+          <stop offset="100%" stop-color="rgba(180,200,180,0)"/>
+        </radialGradient>
+        <symbol id="tree" viewBox="-50 -150 100 200">
+          <path d="M0,-140 L-13,-95 L-6,-95 L-22,-60 L-10,-60 L-30,-25 L-15,-25 L-38,15 L-45,30 L45,30 L38,15 L15,-25 L30,-25 L10,-60 L22,-60 L6,-95 L13,-95 Z" fill="currentColor"/>
+          <rect x="-3" y="25" width="6" height="12" fill="currentColor"/>
+        </symbol>
+      </defs>
+
+      <rect width="1200" height="600" fill="url(#sky)"/>
+      <rect width="1200" height="600" fill="url(#moon)"/>
+
+      <g class="layer-far" color="#1f3328">
+        <use href="#tree" x="50" y="440" width="80" height="160"/>
+        <use href="#tree" x="160" y="455" width="65" height="130"/>
+        <use href="#tree" x="260" y="445" width="75" height="150"/>
+        <use href="#tree" x="370" y="450" width="70" height="140"/>
+        <use href="#tree" x="480" y="440" width="80" height="160"/>
+        <use href="#tree" x="600" y="455" width="65" height="130"/>
+        <use href="#tree" x="710" y="445" width="75" height="150"/>
+        <use href="#tree" x="830" y="450" width="70" height="140"/>
+        <use href="#tree" x="950" y="440" width="80" height="160"/>
+        <use href="#tree" x="1080" y="455" width="65" height="130"/>
+      </g>
+
+      <g class="layer-mid" color="#11201a">
+        <use href="#tree" x="-20" y="380" width="130" height="260"/>
+        <use href="#tree" x="130" y="400" width="105" height="210"/>
+        <use href="#tree" x="280" y="385" width="125" height="250"/>
+        <use href="#tree" x="440" y="395" width="115" height="230"/>
+        <use href="#tree" x="600" y="380" width="135" height="270"/>
+        <use href="#tree" x="780" y="395" width="115" height="230"/>
+        <use href="#tree" x="930" y="385" width="125" height="250"/>
+        <use href="#tree" x="1100" y="400" width="105" height="210"/>
+      </g>
+
+      <g class="layer-near" color="#050a07">
+        <use href="#tree" x="-110" y="270" width="230" height="460"/>
+        <use href="#tree" x="130" y="330" width="170" height="340"/>
+        <use href="#tree" x="350" y="290" width="210" height="420"/>
+        <use href="#tree" x="610" y="310" width="190" height="380"/>
+        <use href="#tree" x="850" y="295" width="205" height="410"/>
+        <use href="#tree" x="1080" y="315" width="190" height="380"/>
+      </g>
+
+      <rect width="1200" height="600" fill="url(#fog)"/>
+    </svg>
+
     <div class="auth-card">
-      <div class="auth-mark"></div>
-      <h1>Street Tree Explorer</h1>
-      <p>Private preview. Enter password to continue.</p>
+      <div class="auth-logo">
+        <svg viewBox="-25 -52 50 64" width="44" height="56">
+          <path d="M0,-46 L-9,-26 L-4,-26 L-13,-10 L-6,-10 L-16,6 L16,6 L6,-10 L13,-10 L4,-26 L9,-26 Z" fill="currentColor"/>
+          <rect x="-2" y="6" width="4" height="6" fill="currentColor"/>
+        </svg>
+      </div>
+      <h1>Deep Forest</h1>
+      <p>Portland's living canopy.</p>
       <form id="auth-form">
         <input type="password" id="auth-input" placeholder="Password" autocomplete="off" />
         <button type="submit">Enter</button>
@@ -36,18 +96,92 @@ function injectAuthOverlay() {
 
   const style = document.createElement("style");
   style.textContent = `
-    #auth-overlay { position: fixed; inset: 0; z-index: 1000; background: var(--bg); display: grid; place-items: center; }
-    #auth-overlay.hidden { opacity: 0; visibility: hidden; transition: opacity 0.3s, visibility 0.3s; }
-    .auth-card { background: var(--surface-strong); backdrop-filter: blur(24px) saturate(140%); border: 1px solid var(--border); padding: 40px; border-radius: 20px; box-shadow: var(--shadow); max-width: 360px; width: 90%; text-align: center; }
-    .auth-mark { width: 48px; height: 48px; margin: 0 auto 20px; border-radius: 14px; background: radial-gradient(circle at 30% 30%, var(--moss) 0%, var(--moss-deep) 70%); }
-    .auth-card h1 { font-size: 18px; margin: 0 0 6px; font-weight: 600; }
-    .auth-card p { color: var(--text-faint); font-size: 13px; margin: 0 0 24px; }
+    #auth-overlay {
+      position: fixed; inset: 0; z-index: 1000;
+      display: grid; place-items: center;
+      background: #060c09;
+      overflow: hidden;
+    }
+    #auth-overlay.hidden { opacity: 0; visibility: hidden; transition: opacity 0.5s, visibility 0.5s; }
+    .forest-scene {
+      position: absolute; inset: 0;
+      width: 100%; height: 100%;
+    }
+    .forest-scene .layer-far { opacity: 0.55; filter: blur(2.5px); animation: drift-slow 80s ease-in-out infinite alternate; transform-origin: center; }
+    .forest-scene .layer-mid { opacity: 0.85; filter: blur(1px); animation: drift-mid 60s ease-in-out infinite alternate; }
+    .forest-scene .layer-near { opacity: 1; animation: drift-near 45s ease-in-out infinite alternate; }
+    @keyframes drift-slow { 0% { transform: translateX(0); } 100% { transform: translateX(-25px); } }
+    @keyframes drift-mid  { 0% { transform: translateX(0); } 100% { transform: translateX(-15px); } }
+    @keyframes drift-near { 0% { transform: translateX(0); } 100% { transform: translateX(-8px); } }
+
+    .auth-card {
+      position: relative; z-index: 1;
+      background: rgba(10, 18, 14, 0.55);
+      backdrop-filter: blur(20px) saturate(140%);
+      -webkit-backdrop-filter: blur(20px) saturate(140%);
+      border: 1px solid rgba(95, 181, 133, 0.18);
+      padding: 44px 40px 32px;
+      border-radius: 22px;
+      box-shadow: 0 30px 80px rgba(0, 0, 0, 0.6), inset 0 0 0 1px rgba(255,255,255,0.02);
+      max-width: 380px;
+      width: 90%;
+      text-align: center;
+      animation: rise 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    @keyframes rise {
+      from { opacity: 0; transform: translateY(24px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .auth-logo {
+      color: #6dc193;
+      display: inline-flex;
+      margin-bottom: 18px;
+      filter: drop-shadow(0 0 14px rgba(95, 181, 133, 0.45));
+    }
+    .auth-card h1 {
+      font-size: 30px;
+      margin: 0 0 8px;
+      font-weight: 500;
+      letter-spacing: -0.02em;
+      color: #f1ede2;
+    }
+    .auth-card p {
+      color: #8fa195;
+      font-size: 13px;
+      margin: 0 0 28px;
+      letter-spacing: 0.02em;
+    }
     #auth-form { display: flex; gap: 8px; }
-    #auth-input { flex: 1; background: var(--bg-elev); border: 1px solid var(--border-strong); border-radius: 10px; padding: 12px 14px; color: var(--text); font: inherit; font-size: 14px; outline: none; }
-    #auth-input:focus { border-color: var(--moss); }
-    #auth-form button { padding: 12px 20px; border: none; border-radius: 10px; background: var(--moss); color: var(--bg); font: inherit; font-weight: 600; cursor: pointer; }
-    #auth-form button:hover { background: #6dc193; }
-    #auth-error { color: var(--rust); font-size: 12px; margin-top: 12px; min-height: 16px; }
+    #auth-input {
+      flex: 1;
+      background: rgba(0, 0, 0, 0.4);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 12px;
+      padding: 14px 16px;
+      color: #ecf0ec;
+      font: inherit; font-size: 14px;
+      outline: none;
+      transition: border-color 0.2s, background 0.2s, box-shadow 0.2s;
+    }
+    #auth-input:focus {
+      border-color: rgba(95, 181, 133, 0.5);
+      background: rgba(95, 181, 133, 0.05);
+      box-shadow: 0 0 0 3px rgba(95, 181, 133, 0.08);
+    }
+    #auth-input::placeholder { color: #6b756f; }
+    #auth-form button {
+      padding: 14px 22px;
+      border: none; border-radius: 12px;
+      background: linear-gradient(135deg, #6dc193 0%, #4a9e6f 100%);
+      color: #0a1410;
+      font: inherit; font-weight: 600;
+      cursor: pointer;
+      transition: transform 0.1s, box-shadow 0.2s;
+      box-shadow: 0 4px 14px rgba(95, 181, 133, 0.3);
+    }
+    #auth-form button:hover { box-shadow: 0 6px 22px rgba(95, 181, 133, 0.55); }
+    #auth-form button:active { transform: translateY(1px); }
+    #auth-error { color: #d97757; font-size: 12px; margin-top: 14px; min-height: 16px; }
   `;
   document.head.appendChild(style);
 }
@@ -142,13 +276,37 @@ map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom
 
 // ── Data ─────────────────────────────────────────────────────────────
 let allFeatures = [];
-let filteredIds = null;
+
+// Normalize property keys to lowercase so we don't care about server-side
+// field name casing changes.
+function normalizeProps(props) {
+  if (!props) return {};
+  const out = {};
+  for (const k of Object.keys(props)) out[k.toLowerCase()] = props[k];
+  return out;
+}
+
+// Read a property using any of several possible keys (handles renames).
+function pick(p, ...keys) {
+  for (const k of keys) {
+    const v = p[k.toLowerCase()];
+    if (v !== undefined && v !== null && v !== "") return v;
+  }
+  return null;
+}
+
+function setLoaderText(msg) {
+  const el = document.querySelector("#loader .loader-inner span");
+  if (el) el.textContent = msg;
+}
 
 async function loadTrees() {
   const all = [];
   let offset = 0;
 
   while (offset < TARGET_TOTAL) {
+    setLoaderText(`Loading the urban canopy… ${all.length.toLocaleString()} trees`);
+
     const params = {
       where: "1=1",
       outFields: "*",
@@ -161,26 +319,33 @@ async function loadTrees() {
     let url = `${FEATURE_SERVER}/query?` + new URLSearchParams(params);
     let res = await fetch(url);
 
+    let feats;
     if (!res.ok) {
+      // Fallback to Esri JSON
       params.f = "json";
       url = `${FEATURE_SERVER}/query?` + new URLSearchParams(params);
       res = await fetch(url);
       if (!res.ok) throw new Error(`Feature service: ${res.status}`);
       const data = await res.json();
-      const feats = (data.features || []).map(esriToGeoJSON);
-      if (!feats.length) break;
-      all.push(...feats);
-      if (feats.length < PAGE_SIZE) break;
+      feats = (data.features || []).map(esriToGeoJSON);
     } else {
       const fc = await res.json();
-      const feats = fc.features || [];
-      if (!feats.length) break;
-      all.push(...feats);
-      if (feats.length < PAGE_SIZE) break;
+      feats = (fc.features || []).map((f) => ({
+        ...f,
+        properties: normalizeProps(f.properties),
+      }));
     }
 
+    if (offset === 0 && feats.length) {
+      console.log("[Street Tree Explorer] First feature properties:", feats[0].properties);
+    }
+
+    if (!feats.length) break;
+    all.push(...feats);
+    if (feats.length < PAGE_SIZE) break;
     offset += PAGE_SIZE;
   }
+  console.log(`[Street Tree Explorer] Loaded ${all.length} trees total`);
   return all;
 }
 
@@ -190,7 +355,7 @@ function esriToGeoJSON(f) {
     geometry: f.geometry
       ? { type: "Point", coordinates: [f.geometry.x, f.geometry.y] }
       : null,
-    properties: f.attributes || {},
+    properties: normalizeProps(f.attributes),
   };
 }
 
@@ -208,7 +373,7 @@ function addLayers(features) {
       "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 1.2, 13, 3, 16, 8, 19, 18],
       "circle-color": [
         "match",
-        ["coalesce", ["get", "Condition"], "Unknown"],
+        ["coalesce", ["get", "condition"], "Unknown"],
         "Good", "#5fb585",
         "Fair", "#e8c468",
         "Poor", "#d97757",
@@ -222,15 +387,23 @@ function addLayers(features) {
   });
 
   map.on("click", "trees-glow", (e) => {
-    const f = e.features[0];
-    const p = f.properties;
+    const p = e.features[0].properties;
+    const name = pick(p, "species_common", "common") || pick(p, "species_latin", "latin") || "Tree";
+    const latin = pick(p, "species_latin", "latin") || "";
+    const heritage = pick(p, "ht_status", "heritage") === "Yes"
+      ? "<div style='color:#e8c468; font-size:11px; margin-top:4px;'>★ HERITAGE TREE</div>"
+      : "";
     const html = `
-      <div style="font: 13px/1.5 Inter, sans-serif; color: #ecf0ec; min-width: 180px;">
-        <div style="font-weight: 600; margin-bottom: 4px;">${p.Common || p.Species || "Tree"}</div>
-        <div style="color: #a0aaa3; font-size: 11px; margin-bottom: 6px;">${p.Genus || ""} ${p.Species || ""}</div>
-        <div><b>DBH:</b> ${p.DBH || "—"}″</div>
-        <div><b>Condition:</b> ${p.Condition || "—"}</div>
-        <div><b>Address:</b> ${p.Address || "—"}</div>
+      <div style="font: 13px/1.5 Inter, sans-serif; color: #ecf0ec; min-width: 200px;">
+        <div style="font-weight: 600; margin-bottom: 4px;">${name}</div>
+        <div style="color: #a0aaa3; font-size: 11px; font-style: italic; margin-bottom: 8px;">${latin}</div>
+        <div><b>Diameter:</b> ${pick(p, "diameter") ? pick(p, "diameter") + '″' : "—"}</div>
+        <div><b>Condition:</b> ${pick(p, "condition") || "—"}</div>
+        <div><b>Native:</b> ${pick(p, "species_native", "native") || "—"}</div>
+        <div><b>Neighborhood:</b> ${pick(p, "priority_neighborhood_name", "neighborhood") || "—"}</div>
+        <div><b>Property:</b> ${pick(p, "prop_type") || "—"}</div>
+        <div><b>Address:</b> ${pick(p, "upload_address", "address") || "—"}</div>
+        ${heritage}
       </div>`;
     new maplibregl.Popup({ closeButton: false, className: "tree-popup" })
       .setLngLat(e.lngLat).setHTML(html).addTo(map);
@@ -241,7 +414,6 @@ function addLayers(features) {
 
 function applyFilter(filterFn) {
   const features = filterFn ? allFeatures.filter(filterFn) : allFeatures;
-  filteredIds = filterFn ? new Set(features.map((f) => f.properties.OBJECTID)) : null;
   map.getSource("trees").setData({ type: "FeatureCollection", features });
   updateStats(features);
   if (filterFn && features.length > 0) {
@@ -253,7 +425,11 @@ function applyFilter(filterFn) {
 
 function updateStats(features) {
   document.getElementById("visible-count").textContent = features.length.toLocaleString();
-  const species = new Set(features.map((f) => f.properties.Species).filter(Boolean));
+  const species = new Set(
+    features
+      .map((f) => pick(f.properties, "species_common", "common", "species_latin", "latin"))
+      .filter(Boolean)
+  );
   document.getElementById("species-count").textContent = species.size.toLocaleString();
 }
 
@@ -296,47 +472,39 @@ composer.addEventListener("submit", async (e) => {
     const data = await res.json();
 
     thinking.remove();
-    if (data.filter) applyFilter(buildFilterFn(data.filter));
-    addMessage("assistant", data.summary || "Done — map updated.");
+    const fn = buildFilterFn(data.filter || {});
+    applyFilter(fn);
+    const count = allFeatures.filter(fn).length;
+    addMessage("assistant", (data.summary || "Filtered.") + ` (${count.toLocaleString()} trees)`);
   } catch (err) {
     thinking.remove();
-    const localFilter = localFallback(q);
-    if (localFilter) {
-      applyFilter(localFilter.fn);
-      addMessage("assistant", `(offline mode) Filtered to ${localFilter.label}.`);
-    } else {
-      addMessage("assistant", "Couldn't reach the AI. Try a keyword like 'maple' or 'poor condition' for a local match.");
-    }
+    addMessage("assistant", "Couldn't reach the AI. Check your connection and try again.");
   }
 });
+
+const ciIncl = (a, b) => String(a || "").toLowerCase().includes(String(b || "").toLowerCase());
+const ciEq = (a, b) => String(a || "").toLowerCase().trim() === String(b || "").toLowerCase().trim();
 
 function buildFilterFn(filter) {
   return (f) => {
     const p = f.properties;
-    if (filter.genus && !ciEq(p.Genus, filter.genus)) return false;
-    if (filter.species && !ciEq(p.Species, filter.species)) return false;
-    if (filter.common && !ciIncludes(p.Common, filter.common)) return false;
-    if (filter.condition && !ciEq(p.Condition, filter.condition)) return false;
-    if (filter.dbh_min != null && (p.DBH ?? 0) < filter.dbh_min) return false;
-    if (filter.dbh_max != null && (p.DBH ?? 999) > filter.dbh_max) return false;
+    if (filter.common && !ciIncl(pick(p, "species_common", "common"), filter.common)) return false;
+    if (filter.latin && !ciIncl(pick(p, "species_latin", "latin"), filter.latin)) return false;
+    if (filter.family && !ciIncl(pick(p, "species_family", "family"), filter.family)) return false;
+    if (filter.functional_type && !ciIncl(pick(p, "species_functional_type"), filter.functional_type)) return false;
+    if (filter.mature_size && !ciEq(pick(p, "species_mature_size"), filter.mature_size)) return false;
+    if (filter.native && !ciEq(pick(p, "species_native", "native"), filter.native)) return false;
+    if (filter.condition && !ciEq(pick(p, "condition"), filter.condition)) return false;
+    const dia = Number(pick(p, "diameter", "dbh"));
+    if (filter.diameter_min != null && (isFinite(dia) ? dia : 0) < filter.diameter_min) return false;
+    if (filter.diameter_max != null && (isFinite(dia) ? dia : 999) > filter.diameter_max) return false;
+    if (filter.neighborhood && !ciIncl(pick(p, "priority_neighborhood_name", "neighborhood"), filter.neighborhood)) return false;
+    if (filter.council_district && !ciIncl(pick(p, "council_district"), filter.council_district)) return false;
+    if (filter.prop_type && !ciIncl(pick(p, "prop_type"), filter.prop_type)) return false;
+    if (filter.park_name && !ciIncl(pick(p, "park_name"), filter.park_name)) return false;
+    if (filter.heritage && !ciEq(pick(p, "ht_status", "heritage"), filter.heritage)) return false;
     return true;
   };
-}
-
-const ciEq = (a, b) => String(a || "").toLowerCase().trim() === String(b || "").toLowerCase().trim();
-const ciIncludes = (a, b) => String(a || "").toLowerCase().includes(String(b || "").toLowerCase());
-
-function localFallback(q) {
-  const lower = q.toLowerCase();
-  const conditions = ["good", "fair", "poor", "dead"];
-  for (const c of conditions) {
-    if (lower.includes(c + " condition") || lower.includes("in " + c)) {
-      return { label: `${c} condition`, fn: (f) => ciEq(f.properties.Condition, c[0].toUpperCase() + c.slice(1)) };
-    }
-  }
-  const m = lower.match(/\b(maple|oak|cherry|plum|magnolia|pine|fir|elm|ash|cedar|dogwood|linden|birch)s?\b/);
-  if (m) return { label: `${m[1]}s`, fn: (f) => ciIncludes(f.properties.Common, m[1]) };
-  return null;
 }
 
 // ── Boot ─────────────────────────────────────────────────────────────
