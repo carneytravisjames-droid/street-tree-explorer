@@ -430,10 +430,14 @@ function addLayers(features) {
   map.on("mouseleave", "trees-glow", () => (map.getCanvas().style.cursor = ""));
 }
 
+let currentFeatures = []; // features currently shown on the map
+
 function applyFilter(filterFn) {
   const features = filterFn ? allFeatures.filter(filterFn) : allFeatures;
+  currentFeatures = features;
   map.getSource("trees").setData({ type: "FeatureCollection", features });
   updateStats(features);
+  updateInsights(features);
   if (filterFn && features.length > 0) {
     const bounds = new maplibregl.LngLatBounds();
     features.forEach((f) => bounds.extend(f.geometry.coordinates));
@@ -571,11 +575,197 @@ function buildFilterFn(filter) {
   };
 }
 
+// ── Brand menu ───────────────────────────────────────────────────────
+const brandButton = document.getElementById("brand-button");
+const brandMenu = document.getElementById("brand-menu");
+brandButton?.addEventListener("click", (e) => {
+  e.stopPropagation();
+  brandMenu.classList.toggle("open");
+});
+document.addEventListener("click", (e) => {
+  if (!brandMenu.contains(e.target) && !brandButton.contains(e.target)) {
+    brandMenu.classList.remove("open");
+  }
+});
+
+// ── Insights panel ───────────────────────────────────────────────────
+const insightsPanel = document.getElementById("insights-panel");
+const insightsToggle = document.getElementById("insights-toggle");
+const insightsClose = document.getElementById("insights-close");
+insightsToggle?.addEventListener("click", () => {
+  insightsPanel.classList.toggle("open");
+  if (insightsPanel.classList.contains("open")) updateInsights(currentFeatures);
+});
+insightsClose?.addEventListener("click", () => insightsPanel.classList.remove("open"));
+
+function renderBars(elId, entries, total) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  if (!entries.length) {
+    el.innerHTML = '<div style="color:var(--text-faint); font-size:12px;">No data.</div>';
+    return;
+  }
+  const max = Math.max(...entries.map((e) => e[1]));
+  el.innerHTML = entries.map(([name, count]) => {
+    const pct = Math.max(2, (count / max) * 100);
+    const share = total ? ((count / total) * 100).toFixed(1) + "%" : "";
+    return `
+      <div class="bar-row">
+        <div class="bar-name">
+          <div class="bar-fill" style="width:${pct}%"></div>
+          <div class="bar-text">${escapeHtml(name)}</div>
+        </div>
+        <div class="bar-value">${count.toLocaleString()}<span style="opacity:0.5; margin-left:4px;">${share}</span></div>
+      </div>`;
+  }).join("");
+}
+
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function updateInsights(features) {
+  if (!insightsPanel || !insightsPanel.classList.contains("open")) return;
+  if (!features) return;
+
+  const total = features.length;
+
+  // KPIs
+  const speciesSet = new Set(features.map((f) => pick(f.properties, "species_common")).filter(Boolean));
+  let native = 0, heritage = 0;
+  for (const f of features) {
+    if (pick(f.properties, "species_native") === "Yes") native++;
+    if (pick(f.properties, "ht_status") === "Yes") heritage++;
+  }
+  document.getElementById("kpi-total").textContent = total.toLocaleString();
+  document.getElementById("kpi-species").textContent = speciesSet.size.toLocaleString();
+  document.getElementById("kpi-native").textContent = native.toLocaleString();
+  document.getElementById("kpi-heritage").textContent = heritage.toLocaleString();
+
+  // Helpers
+  const countBy = (key) => {
+    const m = new Map();
+    for (const f of features) {
+      const v = pick(f.properties, key);
+      if (v) m.set(v, (m.get(v) || 0) + 1);
+    }
+    return m;
+  };
+  const topN = (map, n) =>
+    Array.from(map.entries()).sort((a, b) => b[1] - a[1]).slice(0, n);
+
+  renderBars("bars-species", topN(countBy("species_common"), 10), total);
+
+  // Condition in a fixed order
+  const condMap = countBy("condition");
+  const condOrder = ["Good", "Fair", "Poor", "Dead"];
+  renderBars("bars-condition",
+    condOrder.filter((k) => condMap.has(k)).map((k) => [k, condMap.get(k)]),
+    total);
+
+  renderBars("bars-neighborhood", topN(countBy("priority_neighborhood_name"), 10), total);
+  renderBars("bars-prop", topN(countBy("prop_type"), 8), total);
+
+  // Subtitle
+  document.getElementById("insights-subtitle").textContent =
+    total === allFeatures.length
+      ? "Live for the current view"
+      : `Live for ${total.toLocaleString()} filtered trees`;
+}
+
+// ── Time Machine ─────────────────────────────────────────────────────
+const tmBackdrop = document.getElementById("time-machine-backdrop");
+const tmClose = document.getElementById("tm-close");
+const tmSlider = document.getElementById("tm-slider");
+const tmYear = document.getElementById("tm-year");
+const tmStats = document.getElementById("tm-stats");
+const tmPlay = document.getElementById("tm-play");
+const tmReset = document.getElementById("tm-reset");
+let tmPlaying = false;
+let tmTimer = null;
+
+document.getElementById("open-time-machine")?.addEventListener("click", () => {
+  brandMenu.classList.remove("open");
+  tmBackdrop.classList.add("open");
+  // Set max year based on the data
+  const years = allFeatures.map((f) => Number(pick(f.properties, "planting_fy"))).filter((n) => isFinite(n) && n > 1800);
+  const maxYear = years.length ? Math.max(...years) : new Date().getFullYear();
+  const minYear = years.length ? Math.max(1900, Math.min(...years)) : 1900;
+  tmSlider.min = minYear;
+  tmSlider.max = maxYear;
+  tmSlider.value = maxYear;
+  applyTimeMachine(maxYear);
+});
+
+tmClose?.addEventListener("click", closeTimeMachine);
+tmBackdrop?.addEventListener("click", (e) => {
+  if (e.target === tmBackdrop) closeTimeMachine();
+});
+
+tmSlider?.addEventListener("input", (e) => applyTimeMachine(Number(e.target.value)));
+
+tmPlay?.addEventListener("click", () => {
+  if (tmPlaying) {
+    stopPlay();
+  } else {
+    tmPlaying = true;
+    tmPlay.textContent = "⏸ Pause";
+    const max = Number(tmSlider.max);
+    const min = Number(tmSlider.min);
+    let y = Number(tmSlider.value);
+    if (y >= max) y = min;
+    tmTimer = setInterval(() => {
+      y += 1;
+      if (y > max) {
+        stopPlay();
+        return;
+      }
+      tmSlider.value = y;
+      applyTimeMachine(y);
+    }, 120);
+  }
+});
+
+tmReset?.addEventListener("click", () => {
+  const max = Number(tmSlider.max);
+  tmSlider.value = max;
+  applyTimeMachine(max);
+  stopPlay();
+});
+
+function stopPlay() {
+  tmPlaying = false;
+  tmPlay.textContent = "▶ Play";
+  if (tmTimer) { clearInterval(tmTimer); tmTimer = null; }
+}
+
+function closeTimeMachine() {
+  stopPlay();
+  tmBackdrop.classList.remove("open");
+  applyFilter(null); // restore full view
+}
+
+function applyTimeMachine(year) {
+  tmYear.textContent = year;
+  const fn = (f) => {
+    const fy = Number(pick(f.properties, "planting_fy"));
+    return isFinite(fy) && fy > 0 && fy <= year;
+  };
+  const matched = allFeatures.filter(fn);
+  // Don't auto-zoom while scrubbing — keep current view stable.
+  currentFeatures = matched;
+  map.getSource("trees").setData({ type: "FeatureCollection", features: matched });
+  updateStats(matched);
+  updateInsights(matched);
+  tmStats.textContent = `${matched.toLocaleString ? matched.length.toLocaleString() : matched.length} trees planted by ${year}`;
+}
+
 // ── Boot ─────────────────────────────────────────────────────────────
 map.on("load", async () => {
   await ensureAuth();
   try {
     allFeatures = await loadTrees();
+    currentFeatures = allFeatures;
     dataContext = buildDataContext(allFeatures);
     console.log("[Deep Forest] Built data context:", dataContext);
     addLayers(allFeatures);
