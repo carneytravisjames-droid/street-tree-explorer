@@ -409,21 +409,42 @@ function addLayers(features) {
     const name = pick(p, "species_common", "common") || pick(p, "species_latin", "latin") || "Tree";
     const latin = pick(p, "species_latin", "latin") || "";
     const heritage = pick(p, "ht_status", "heritage") === "Yes"
-      ? "<div style='color:#e8c468; font-size:11px; margin-top:4px;'>★ HERITAGE TREE</div>"
+      ? "<div class='tree-badge heritage'>★ HERITAGE TREE</div>"
       : "";
+
+    const dia = pick(p, "diameter");
+    const fy = pick(p, "planting_fy");
+    const row = (label, value) => value
+      ? `<div class="kv"><span class="k">${label}</span><span class="v">${escapeHtml(String(value))}</span></div>`
+      : "";
+
     const html = `
-      <div style="font: 13px/1.5 Inter, sans-serif; color: #ecf0ec; min-width: 200px;">
-        <div style="font-weight: 600; margin-bottom: 4px;">${name}</div>
-        <div style="color: #a0aaa3; font-size: 11px; font-style: italic; margin-bottom: 8px;">${latin}</div>
-        <div><b>Diameter:</b> ${pick(p, "diameter") ? pick(p, "diameter") + '″' : "—"}</div>
-        <div><b>Condition:</b> ${pick(p, "condition") || "—"}</div>
-        <div><b>Native:</b> ${pick(p, "species_native", "native") || "—"}</div>
-        <div><b>Neighborhood:</b> ${pick(p, "priority_neighborhood_name", "neighborhood") || "—"}</div>
-        <div><b>Property:</b> ${pick(p, "prop_type") || "—"}</div>
-        <div><b>Address:</b> ${pick(p, "upload_address", "address") || "—"}</div>
+      <div class="tree-popup-inner">
+        <div class="tp-name">${escapeHtml(name)}</div>
+        <div class="tp-latin">${escapeHtml(latin)}</div>
         ${heritage}
+        <div class="kv-grid">
+          ${row("Diameter", dia ? dia + '″' : null)}
+          ${row("Height", pick(p, "tree_height"))}
+          ${row("Canopy spread", pick(p, "can_spread"))}
+          ${row("Condition", pick(p, "condition"))}
+          ${row("Native", pick(p, "species_native", "native"))}
+          ${row("Mature size", pick(p, "species_mature_size"))}
+          ${row("Family", pick(p, "species_family"))}
+          ${row("Type", pick(p, "species_functional_type"))}
+          ${row("Planted", fy)}
+          ${row("Program", pick(p, "program"))}
+          ${row("Neighborhood", pick(p, "priority_neighborhood_name", "neighborhood"))}
+          ${row("District", pick(p, "council_district"))}
+          ${row("Park", pick(p, "park_name"))}
+          ${row("Property", pick(p, "prop_type"))}
+          ${row("Site type", pick(p, "site_type"))}
+          ${row("Site size", pick(p, "site_size"))}
+          ${row("Wires", pick(p, "wires"))}
+        </div>
+        ${pick(p, "upload_address", "address") ? `<div class="tp-addr">${escapeHtml(pick(p, "upload_address", "address"))}</div>` : ""}
       </div>`;
-    new maplibregl.Popup({ closeButton: false, className: "tree-popup" })
+    new maplibregl.Popup({ closeButton: true, maxWidth: "320px", className: "tree-popup" })
       .setLngLat(e.lngLat).setHTML(html).addTo(map);
   });
   map.on("mouseenter", "trees-glow", () => (map.getCanvas().style.cursor = "pointer"));
@@ -482,6 +503,15 @@ function buildDataContext(features) {
     if (pick(f.properties, "species_native", "native") === "Yes") native++;
   }
 
+  const families = countBy("species_family");
+  const functionalTypes = countBy("species_functional_type");
+  const matureSizes = countBy("species_mature_size");
+  const programs = countBy("program");
+  const heights = countBy("tree_height");
+  const canSpreads = countBy("can_spread");
+  const wiresMap = countBy("wires");
+  const siteTypes = countBy("site_type");
+
   return {
     total: features.length,
     heritage_count: heritage,
@@ -489,9 +519,17 @@ function buildDataContext(features) {
     by_condition: Object.fromEntries(conditions),
     by_prop_type: Object.fromEntries(propTypes),
     by_council_district: Object.fromEntries(districts),
+    by_mature_size: Object.fromEntries(matureSizes),
+    by_functional_type: Object.fromEntries(functionalTypes),
+    by_wires: Object.fromEntries(wiresMap),
     neighborhoods: Array.from(neighborhoods.keys()).sort(),
     parks: topN(parks, 100).map(([name, count]) => ({ name, count })),
     top_species: topN(species, 150).map(([name, count]) => ({ name, count })),
+    top_families: topN(families, 30).map(([name, count]) => ({ name, count })),
+    top_programs: topN(programs, 20).map(([name, count]) => ({ name, count })),
+    top_site_types: topN(siteTypes, 15).map(([name, count]) => ({ name, count })),
+    height_buckets: Array.from(heights.keys()),
+    canopy_spread_buckets: Array.from(canSpreads.keys()),
   };
 }
 
@@ -566,10 +604,19 @@ function buildFilterFn(filter) {
     const dia = Number(pick(p, "diameter", "dbh"));
     if (filter.diameter_min != null && (isFinite(dia) ? dia : 0) < filter.diameter_min) return false;
     if (filter.diameter_max != null && (isFinite(dia) ? dia : 999) > filter.diameter_max) return false;
+    if (filter.height && !ciIncl(pick(p, "tree_height"), filter.height)) return false;
+    if (filter.canopy_spread && !ciIncl(pick(p, "can_spread"), filter.canopy_spread)) return false;
     if (filter.neighborhood && !ciIncl(pick(p, "priority_neighborhood_name", "neighborhood"), filter.neighborhood)) return false;
     if (filter.council_district && !ciIncl(pick(p, "council_district"), filter.council_district)) return false;
     if (filter.prop_type && !ciIncl(pick(p, "prop_type"), filter.prop_type)) return false;
     if (filter.park_name && !ciIncl(pick(p, "park_name"), filter.park_name)) return false;
+    if (filter.site_type && !ciIncl(pick(p, "site_type"), filter.site_type)) return false;
+    if (filter.site_size && !ciIncl(pick(p, "site_size"), filter.site_size)) return false;
+    if (filter.wires && !ciEq(pick(p, "wires"), filter.wires)) return false;
+    if (filter.program && !ciIncl(pick(p, "program"), filter.program)) return false;
+    const fy = Number(pick(p, "planting_fy"));
+    if (filter.planting_year_min != null && (isFinite(fy) ? fy : 0) < filter.planting_year_min) return false;
+    if (filter.planting_year_max != null && (isFinite(fy) ? fy : 9999) > filter.planting_year_max) return false;
     if (filter.heritage && !ciEq(pick(p, "ht_status", "heritage"), filter.heritage)) return false;
     return true;
   };
@@ -665,6 +712,18 @@ function updateInsights(features) {
 
   renderBars("bars-neighborhood", topN(countBy("priority_neighborhood_name"), 10), total);
   renderBars("bars-prop", topN(countBy("prop_type"), 8), total);
+  renderBars("bars-family", topN(countBy("species_family"), 10), total);
+  renderBars("bars-functional", topN(countBy("species_functional_type"), 8), total);
+
+  // Mature size with fixed order
+  const sizeMap = countBy("species_mature_size");
+  const sizeOrder = ["Small", "Medium", "Large"];
+  renderBars("bars-mature",
+    sizeOrder.filter((k) => sizeMap.has(k)).map((k) => [k, sizeMap.get(k)]),
+    total);
+
+  renderBars("bars-program", topN(countBy("program"), 10), total);
+  renderBars("bars-wires", topN(countBy("wires"), 5), total);
 
   // Subtitle
   document.getElementById("insights-subtitle").textContent =
