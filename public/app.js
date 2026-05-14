@@ -7,7 +7,8 @@ const FEATURE_SERVER =
 const CHAT_API = "https://street-tree-chat.killtimber1.workers.dev";
 
 const PAGE_SIZE = 2000;
-const TARGET_TOTAL = 12000;
+const CONCURRENCY = 15;
+const HARD_CAP = 1000000; // safety ceiling — Portland has nowhere near this many
 
 // ── Auth ─────────────────────────────────────────────────────────────
 const AUTH_KEY = "stx_pw";
@@ -300,52 +301,68 @@ function setLoaderText(msg) {
   if (el) el.textContent = msg;
 }
 
-async function loadTrees() {
-  const all = [];
-  let offset = 0;
-
-  while (offset < TARGET_TOTAL) {
-    setLoaderText(`Loading the urban canopy… ${all.length.toLocaleString()} trees`);
-
-    const params = {
-      where: "1=1",
-      outFields: "*",
-      returnGeometry: "true",
-      outSR: "4326",
-      f: "geojson",
-      resultRecordCount: PAGE_SIZE,
-      resultOffset: offset,
-    };
-    let url = `${FEATURE_SERVER}/query?` + new URLSearchParams(params);
-    let res = await fetch(url);
-
-    let feats;
-    if (!res.ok) {
-      // Fallback to Esri JSON
-      params.f = "json";
-      url = `${FEATURE_SERVER}/query?` + new URLSearchParams(params);
-      res = await fetch(url);
-      if (!res.ok) throw new Error(`Feature service: ${res.status}`);
-      const data = await res.json();
-      feats = (data.features || []).map(esriToGeoJSON);
-    } else {
-      const fc = await res.json();
-      feats = (fc.features || []).map((f) => ({
-        ...f,
-        properties: normalizeProps(f.properties),
-      }));
-    }
-
-    if (offset === 0 && feats.length) {
-      console.log("[Street Tree Explorer] First feature properties:", feats[0].properties);
-    }
-
-    if (!feats.length) break;
-    all.push(...feats);
-    if (feats.length < PAGE_SIZE) break;
-    offset += PAGE_SIZE;
+async function fetchPage(offset) {
+  const params = {
+    where: "1=1",
+    outFields: "*",
+    returnGeometry: "true",
+    outSR: "4326",
+    f: "geojson",
+    resultRecordCount: PAGE_SIZE,
+    resultOffset: offset,
+  };
+  let url = `${FEATURE_SERVER}/query?` + new URLSearchParams(params);
+  let res = await fetch(url);
+  if (!res.ok) {
+    params.f = "json";
+    url = `${FEATURE_SERVER}/query?` + new URLSearchParams(params);
+    res = await fetch(url);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return (data.features || []).map(esriToGeoJSON);
   }
-  console.log(`[Street Tree Explorer] Loaded ${all.length} trees total`);
+  const fc = await res.json();
+  return (fc.features || []).map((f) => ({
+    ...f,
+    properties: normalizeProps(f.properties),
+  }));
+}
+
+async function loadTrees() {
+  // Get total count first so we know how much to fetch.
+  setLoaderText("Counting trees…");
+  let total = 100000;
+  try {
+    const cRes = await fetch(`${FEATURE_SERVER}/query?where=1%3D1&returnCountOnly=true&f=json`);
+    if (cRes.ok) {
+      const cData = await cRes.json();
+      if (cData.count) total = Math.min(cData.count, HARD_CAP);
+    }
+  } catch {}
+  console.log(`[Deep Forest] Server reports ${total.toLocaleString()} trees`);
+
+  const offsets = [];
+  for (let o = 0; o < total; o += PAGE_SIZE) offsets.push(o);
+
+  const all = [];
+  let loaded = 0;
+  let firstLogged = false;
+
+  // Process offsets in parallel batches.
+  for (let i = 0; i < offsets.length; i += CONCURRENCY) {
+    const chunk = offsets.slice(i, i + CONCURRENCY);
+    const results = await Promise.all(chunk.map(fetchPage));
+    for (const feats of results) {
+      if (!firstLogged && feats.length) {
+        console.log("[Deep Forest] First feature properties:", feats[0].properties);
+        firstLogged = true;
+      }
+      all.push(...feats);
+      loaded += feats.length;
+    }
+    setLoaderText(`Loading the urban canopy… ${loaded.toLocaleString()} of ${total.toLocaleString()}`);
+  }
+  console.log(`[Deep Forest] Loaded ${all.length} trees`);
   return all;
 }
 
@@ -475,7 +492,13 @@ composer.addEventListener("submit", async (e) => {
     const fn = buildFilterFn(data.filter || {});
     applyFilter(fn);
     const count = allFeatures.filter(fn).length;
-    addMessage("assistant", (data.summary || "Filtered.") + ` (${count.toLocaleString()} trees)`);
+
+    let summary = data.summary || "Filtered.";
+    summary = summary.replace(/\{count\}/gi, count.toLocaleString());
+    if (count === 0) {
+      summary = "No trees match that filter. Try something broader like 'oaks' or 'trees in Sellwood'.";
+    }
+    addMessage("assistant", summary);
   } catch (err) {
     thinking.remove();
     addMessage("assistant", "Couldn't reach the AI. Check your connection and try again.");
@@ -514,6 +537,9 @@ map.on("load", async () => {
     allFeatures = await loadTrees();
     addLayers(allFeatures);
     updateStats(allFeatures);
+    // Update brand subtitle with real tree count
+    const sub = document.querySelector(".brand-text .sub");
+    if (sub) sub.textContent = `Portland · ${allFeatures.length.toLocaleString()} trees`;
     document.getElementById("loader").classList.add("hidden");
   } catch (err) {
     console.error(err);
