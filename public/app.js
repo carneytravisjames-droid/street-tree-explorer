@@ -277,6 +277,7 @@ map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom
 
 // ── Data ─────────────────────────────────────────────────────────────
 let allFeatures = [];
+let dataContext = null; // aggregated summary sent to the AI as context
 
 // Normalize property keys to lowercase so we don't care about server-side
 // field name casing changes.
@@ -450,6 +451,46 @@ function updateStats(features) {
   document.getElementById("species-count").textContent = species.size.toLocaleString();
 }
 
+// Build a compact context object the AI can use to map natural language
+// (place names, species nicknames) onto exact dataset values.
+function buildDataContext(features) {
+  const countBy = (key) => {
+    const m = new Map();
+    for (const f of features) {
+      const v = pick(f.properties, key);
+      if (v) m.set(v, (m.get(v) || 0) + 1);
+    }
+    return m;
+  };
+  const topN = (map, n) =>
+    Array.from(map.entries()).sort((a, b) => b[1] - a[1]).slice(0, n);
+
+  const conditions = countBy("condition");
+  const propTypes = countBy("prop_type");
+  const neighborhoods = countBy("priority_neighborhood_name");
+  const districts = countBy("council_district");
+  const parks = countBy("park_name");
+  const species = countBy("species_common");
+
+  let heritage = 0, native = 0;
+  for (const f of features) {
+    if (pick(f.properties, "ht_status", "heritage") === "Yes") heritage++;
+    if (pick(f.properties, "species_native", "native") === "Yes") native++;
+  }
+
+  return {
+    total: features.length,
+    heritage_count: heritage,
+    native_count: native,
+    by_condition: Object.fromEntries(conditions),
+    by_prop_type: Object.fromEntries(propTypes),
+    by_council_district: Object.fromEntries(districts),
+    neighborhoods: Array.from(neighborhoods.keys()).sort(),
+    parks: topN(parks, 100).map(([name, count]) => ({ name, count })),
+    top_species: topN(species, 150).map(([name, count]) => ({ name, count })),
+  };
+}
+
 // ── Chat ─────────────────────────────────────────────────────────────
 const composer = document.getElementById("composer");
 const promptInput = document.getElementById("prompt");
@@ -477,7 +518,7 @@ composer.addEventListener("submit", async (e) => {
     const res = await fetch(CHAT_API, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-App-Password": appPassword },
-      body: JSON.stringify({ question: q }),
+      body: JSON.stringify({ question: q, context: dataContext }),
     });
 
     if (res.status === 401) {
@@ -535,6 +576,8 @@ map.on("load", async () => {
   await ensureAuth();
   try {
     allFeatures = await loadTrees();
+    dataContext = buildDataContext(allFeatures);
+    console.log("[Deep Forest] Built data context:", dataContext);
     addLayers(allFeatures);
     updateStats(allFeatures);
     // Update brand subtitle with real tree count
