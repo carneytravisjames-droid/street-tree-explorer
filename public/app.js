@@ -297,6 +297,18 @@ function pick(p, ...keys) {
   return null;
 }
 
+// Heritage status — be permissive (data may use "Yes", "Heritage", "Approved", etc.)
+function isHeritage(p) {
+  const v = String(pick(p, "ht_status", "heritage") || "").trim().toLowerCase();
+  return !!v && v !== "no" && v !== "n" && v !== "none" && v !== "false" && v !== "null";
+}
+
+// Native — accept "Yes", "Y", "Native", etc.
+function isNative(p) {
+  const v = String(pick(p, "species_native", "native") || "").trim().toLowerCase();
+  return v === "yes" || v === "y" || v === "true" || v === "native";
+}
+
 function setLoaderText(msg) {
   const el = document.querySelector("#loader .loader-inner span");
   if (el) el.textContent = msg;
@@ -408,7 +420,7 @@ function addLayers(features) {
     const p = e.features[0].properties;
     const name = pick(p, "species_common", "common") || pick(p, "species_latin", "latin") || "Tree";
     const latin = pick(p, "species_latin", "latin") || "";
-    const heritage = pick(p, "ht_status", "heritage") === "Yes"
+    const heritage = isHeritage(p)
       ? "<div class='tree-badge heritage'>★ HERITAGE TREE</div>"
       : "";
 
@@ -499,8 +511,8 @@ function buildDataContext(features) {
 
   let heritage = 0, native = 0;
   for (const f of features) {
-    if (pick(f.properties, "ht_status", "heritage") === "Yes") heritage++;
-    if (pick(f.properties, "species_native", "native") === "Yes") native++;
+    if (isHeritage(f.properties)) heritage++;
+    if (isNative(f.properties)) native++;
   }
 
   const families = countBy("species_family");
@@ -681,8 +693,8 @@ function updateInsights(features) {
   const speciesSet = new Set(features.map((f) => pick(f.properties, "species_common")).filter(Boolean));
   let native = 0, heritage = 0;
   for (const f of features) {
-    if (pick(f.properties, "species_native") === "Yes") native++;
-    if (pick(f.properties, "ht_status") === "Yes") heritage++;
+    if (isNative(f.properties)) native++;
+    if (isHeritage(f.properties)) heritage++;
   }
   document.getElementById("kpi-total").textContent = total.toLocaleString();
   document.getElementById("kpi-species").textContent = speciesSet.size.toLocaleString();
