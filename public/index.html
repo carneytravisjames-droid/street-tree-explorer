@@ -14,23 +14,50 @@
   <div id="map"></div>
 
   <header class="topbar">
-    <div class="brand">
-      <div class="mark"></div>
-      <div class="brand-text">
-        <h1>Deep Forest</h1>
-        <span class="sub">Portland's urban canopy</span>
+    <div class="brand-wrap">
+      <button class="brand" id="brand-button" type="button">
+        <div class="mark"></div>
+        <div class="brand-text">
+          <h1>Deep Forest <span class="caret">▾</span></h1>
+          <span class="sub">Portland's urban canopy</span>
+        </div>
+      </button>
+      <div class="brand-menu" id="brand-menu" role="menu">
+        <button class="menu-item" id="open-time-machine" type="button" role="menuitem">
+          <span class="menu-icon">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="9"/>
+              <polyline points="12 7 12 12 15 14"/>
+            </svg>
+          </span>
+          <div class="menu-text">
+            <div class="menu-title">Time Machine</div>
+            <div class="menu-desc">Watch the canopy grow over decades</div>
+          </div>
+        </button>
       </div>
     </div>
+
     <div class="stats" id="stats">
       <span class="stat"><b id="visible-count">—</b><em>visible</em></span>
       <span class="stat"><b id="species-count">—</b><em>species</em></span>
+      <button class="stat stat-button" id="insights-toggle" type="button" title="Toggle insights">
+        <b>
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="18" y1="20" x2="18" y2="10"/>
+            <line x1="12" y1="20" x2="12" y2="4"/>
+            <line x1="6" y1="20" x2="6" y2="14"/>
+          </svg>
+        </b>
+        <em>insights</em>
+      </button>
     </div>
   </header>
 
   <aside class="panel" id="panel">
     <div class="panel-header">
       <h2>Ask the canopy</h2>
-      <p>Try: "mature oaks in poor condition" · "heritage trees" · "native trees in Buckman"</p>
+      <p>Try: "mature oaks in poor condition" · "heritage trees" · "trees in Mt. Tabor Park"</p>
     </div>
 
     <div class="messages" id="messages">
@@ -54,6 +81,72 @@
       </button>
     </form>
   </aside>
+
+  <!-- Insights panel: slides in from left -->
+  <aside class="insights-panel" id="insights-panel" aria-hidden="true">
+    <div class="insights-header">
+      <div>
+        <h2>Canopy Insights</h2>
+        <p id="insights-subtitle">Live for the current view</p>
+      </div>
+      <button class="close-btn" id="insights-close" type="button" aria-label="Close">×</button>
+    </div>
+    <div class="insights-body">
+      <div class="kpi-row">
+        <div class="kpi"><b id="kpi-total">—</b><em>trees</em></div>
+        <div class="kpi"><b id="kpi-species">—</b><em>species</em></div>
+        <div class="kpi"><b id="kpi-native">—</b><em>native</em></div>
+        <div class="kpi"><b id="kpi-heritage">—</b><em>heritage</em></div>
+      </div>
+
+      <div class="insight-section">
+        <h3>Top Species</h3>
+        <div class="bars" id="bars-species"></div>
+      </div>
+
+      <div class="insight-section">
+        <h3>Condition</h3>
+        <div class="bars" id="bars-condition"></div>
+      </div>
+
+      <div class="insight-section">
+        <h3>Top Neighborhoods</h3>
+        <div class="bars" id="bars-neighborhood"></div>
+      </div>
+
+      <div class="insight-section">
+        <h3>Property Type</h3>
+        <div class="bars" id="bars-prop"></div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Time Machine modal -->
+  <div class="modal-backdrop" id="time-machine-backdrop" aria-hidden="true">
+    <div class="modal" id="time-machine-modal" role="dialog" aria-labelledby="tm-title">
+      <div class="modal-header">
+        <div>
+          <h2 id="tm-title">Time Machine</h2>
+          <p>Drag the slider to watch Portland's canopy grow.</p>
+        </div>
+        <button class="close-btn" id="tm-close" type="button" aria-label="Close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="tm-year" id="tm-year">2026</div>
+        <div class="tm-stats" id="tm-stats">— trees planted by this year</div>
+        <div class="tm-slider-wrap">
+          <input type="range" id="tm-slider" min="1900" max="2026" step="1" value="2026" />
+          <div class="tm-ticks">
+            <span>1900</span><span>1950</span><span>1980</span><span>2000</span><span>2026</span>
+          </div>
+        </div>
+        <div class="tm-controls">
+          <button class="tm-btn" id="tm-play" type="button">▶ Play</button>
+          <button class="tm-btn ghost" id="tm-reset" type="button">Reset</button>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <div class="loader" id="loader">
     <div class="loader-inner">
