@@ -512,9 +512,13 @@ function updateStats(features) {
   document.getElementById("species-count").textContent = species.size.toLocaleString();
 }
 
-// Build a compact context object the AI can use to map natural language
-// (place names, species nicknames) onto exact dataset values.
-function buildDataContext(features) {
+// Build a rich context object the AI can use to answer questions about
+// the canopy, including cross-tabulations and per-neighborhood stats.
+function buildDataContext(rawFeatures) {
+  // Use only active trees for the main stats (proposed/vacant don't count
+  // as "trees" in the canopy sense).
+  const features = rawFeatures.filter((f) => isActiveTree(f.properties));
+
   const countBy = (key) => {
     const m = new Map();
     for (const f of features) {
@@ -549,10 +553,91 @@ function buildDataContext(features) {
   const siteTypes = countBy("site_type");
   const statuses = countBy("status");
 
+  // Diameter stats (mean, median, percentiles)
+  const dias = features.map((f) => Number(pick(f.properties, "diameter")))
+    .filter((n) => isFinite(n) && n > 0)
+    .sort((a, b) => a - b);
+  const pct = (p) => dias[Math.floor((dias.length - 1) * p)] || 0;
+  const diameter_stats = dias.length ? {
+    count: dias.length,
+    mean: Math.round((dias.reduce((a, b) => a + b, 0) / dias.length) * 10) / 10,
+    median: pct(0.5),
+    p25: pct(0.25),
+    p75: pct(0.75),
+    p95: pct(0.95),
+    max: dias[dias.length - 1],
+  } : null;
+
+  // Planting by decade
+  const planting_by_decade = {};
+  for (const f of features) {
+    const fy = Number(pick(f.properties, "planting_fy"));
+    if (!isFinite(fy) || fy < 1900 || fy > 2100) continue;
+    const d = Math.floor(fy / 10) * 10 + "s";
+    planting_by_decade[d] = (planting_by_decade[d] || 0) + 1;
+  }
+
+  // Per-neighborhood detailed breakdowns
+  const nhStats = new Map();
+  for (const f of features) {
+    const n = pick(f.properties, "priority_neighborhood_name");
+    if (!n) continue;
+    if (!nhStats.has(n)) nhStats.set(n, {
+      name: n, total: 0, heritage: 0, native: 0,
+      species: new Map(), condition: new Map(),
+    });
+    const s = nhStats.get(n);
+    s.total++;
+    if (isHeritage(f.properties)) s.heritage++;
+    if (isNative(f.properties)) s.native++;
+    const sp = pick(f.properties, "species_common");
+    if (sp) s.species.set(sp, (s.species.get(sp) || 0) + 1);
+    const c = pick(f.properties, "condition");
+    if (c) s.condition.set(c, (s.condition.get(c) || 0) + 1);
+  }
+  const neighborhood_stats = Array.from(nhStats.values())
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 25)
+    .map((s) => ({
+      name: s.name,
+      total: s.total,
+      heritage: s.heritage,
+      native: s.native,
+      top_species: Array.from(s.species.entries()).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k, v]) => `${k}:${v}`),
+      condition: Object.fromEntries(s.condition),
+    }));
+
+  // Per-park breakdowns
+  const parkStats = new Map();
+  for (const f of features) {
+    const n = pick(f.properties, "park_name");
+    if (!n) continue;
+    if (!parkStats.has(n)) parkStats.set(n, { name: n, total: 0, heritage: 0, native: 0, species: new Map() });
+    const s = parkStats.get(n);
+    s.total++;
+    if (isHeritage(f.properties)) s.heritage++;
+    if (isNative(f.properties)) s.native++;
+    const sp = pick(f.properties, "species_common");
+    if (sp) s.species.set(sp, (s.species.get(sp) || 0) + 1);
+  }
+  const park_stats = Array.from(parkStats.values())
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 20)
+    .map((s) => ({
+      name: s.name,
+      total: s.total,
+      heritage: s.heritage,
+      native: s.native,
+      top_species: Array.from(s.species.entries()).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k, v]) => `${k}:${v}`),
+    }));
+
   return {
-    total: features.length,
+    total_active: features.length,
+    total_in_dataset: rawFeatures.length,
     heritage_count: heritage,
     native_count: native,
+    diameter_stats,
+    planting_by_decade,
     by_condition: Object.fromEntries(conditions),
     by_prop_type: Object.fromEntries(propTypes),
     by_council_district: Object.fromEntries(districts),
@@ -560,7 +645,8 @@ function buildDataContext(features) {
     by_functional_type: Object.fromEntries(functionalTypes),
     by_wires: Object.fromEntries(wiresMap),
     by_status: Object.fromEntries(statuses),
-    neighborhoods: Array.from(neighborhoods.keys()).sort(),
+    neighborhood_stats,         // top 25 with internal breakdowns
+    park_stats,                 // top 20 with internal breakdowns
     parks: topN(parks, 100).map(([name, count]) => ({ name, count })),
     top_species: topN(species, 150).map(([name, count]) => ({ name, count })),
     top_families: topN(families, 30).map(([name, count]) => ({ name, count })),
