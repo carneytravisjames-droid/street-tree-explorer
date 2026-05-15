@@ -309,6 +309,14 @@ function isNative(p) {
   return v === "yes" || v === "y" || v === "true" || v === "native";
 }
 
+// Active tree — exclude proposed planting spots, vacancies, stumps, etc.
+function isActiveTree(p) {
+  const v = String(pick(p, "status") || "").trim().toLowerCase();
+  if (!v) return true; // unknown status: assume active
+  const dead = ["stump", "vacant", "proposed", "removed", "dead", "missing", "not planted", "absent"];
+  return !dead.some((bad) => v.includes(bad));
+}
+
 function setLoaderText(msg) {
   const el = document.querySelector("#loader .loader-inner span");
   if (el) el.textContent = msg;
@@ -426,6 +434,11 @@ function addLayers(features) {
 
     const dia = pick(p, "diameter");
     const fy = pick(p, "planting_fy");
+    const pdate = pick(p, "planting_date");
+    const dadded = pick(p, "date_added");
+    const strip = pick(p, "strip_size");
+    const status = pick(p, "status");
+    const pid = pick(p, "pid");
     const row = (label, value) => value
       ? `<div class="kv"><span class="k">${label}</span><span class="v">${escapeHtml(String(value))}</span></div>`
       : "";
@@ -435,6 +448,7 @@ function addLayers(features) {
         <div class="tp-name">${escapeHtml(name)}</div>
         <div class="tp-latin">${escapeHtml(latin)}</div>
         ${heritage}
+        ${status ? `<div class='tree-badge status'>${escapeHtml(String(status))}</div>` : ""}
         <div class="kv-grid">
           ${row("Diameter", dia ? dia + '″' : null)}
           ${row("Height", pick(p, "tree_height"))}
@@ -444,7 +458,8 @@ function addLayers(features) {
           ${row("Mature size", pick(p, "species_mature_size"))}
           ${row("Family", pick(p, "species_family"))}
           ${row("Type", pick(p, "species_functional_type"))}
-          ${row("Planted", fy)}
+          ${row("Planted (FY)", fy)}
+          ${row("Planting date", pdate ? formatDate(pdate) : null)}
           ${row("Program", pick(p, "program"))}
           ${row("Neighborhood", pick(p, "priority_neighborhood_name", "neighborhood"))}
           ${row("District", pick(p, "council_district"))}
@@ -452,7 +467,11 @@ function addLayers(features) {
           ${row("Property", pick(p, "prop_type"))}
           ${row("Site type", pick(p, "site_type"))}
           ${row("Site size", pick(p, "site_size"))}
+          ${row("Strip width", strip ? strip + ' ft' : null)}
+          ${row("Site improvement", pick(p, "site_improvement"))}
           ${row("Wires", pick(p, "wires"))}
+          ${row("Inventoried", dadded ? formatDate(dadded) : null)}
+          ${row("Tree ID", pid)}
         </div>
         ${pick(p, "upload_address", "address") ? `<div class="tp-addr">${escapeHtml(pick(p, "upload_address", "address"))}</div>` : ""}
       </div>`;
@@ -465,8 +484,13 @@ function addLayers(features) {
 
 let currentFeatures = []; // features currently shown on the map
 
+// Default view = active trees only (skip proposed/vacant/stump).
+function defaultBaseFilter(f) { return isActiveTree(f.properties); }
+
 function applyFilter(filterFn) {
-  const features = filterFn ? allFeatures.filter(filterFn) : allFeatures;
+  const features = filterFn
+    ? allFeatures.filter(filterFn)
+    : allFeatures.filter(defaultBaseFilter);
   currentFeatures = features;
   map.getSource("trees").setData({ type: "FeatureCollection", features });
   updateStats(features);
@@ -523,6 +547,7 @@ function buildDataContext(features) {
   const canSpreads = countBy("can_spread");
   const wiresMap = countBy("wires");
   const siteTypes = countBy("site_type");
+  const statuses = countBy("status");
 
   return {
     total: features.length,
@@ -534,6 +559,7 @@ function buildDataContext(features) {
     by_mature_size: Object.fromEntries(matureSizes),
     by_functional_type: Object.fromEntries(functionalTypes),
     by_wires: Object.fromEntries(wiresMap),
+    by_status: Object.fromEntries(statuses),
     neighborhoods: Array.from(neighborhoods.keys()).sort(),
     parks: topN(parks, 100).map(([name, count]) => ({ name, count })),
     top_species: topN(species, 150).map(([name, count]) => ({ name, count })),
@@ -545,28 +571,266 @@ function buildDataContext(features) {
   };
 }
 
-// ── Chat ─────────────────────────────────────────────────────────────
-const composer = document.getElementById("composer");
-const promptInput = document.getElementById("prompt");
-const messages = document.getElementById("messages");
+// ── Filter panel ─────────────────────────────────────────────────────
+const ciIncl = (a, b) => String(a || "").toLowerCase().includes(String(b || "").toLowerCase());
+const ciEq = (a, b) => String(a || "").toLowerCase().trim() === String(b || "").toLowerCase().trim();
 
-function addMessage(role, text, opts = {}) {
-  const div = document.createElement("div");
-  div.className = `msg ${role}` + (opts.thinking ? " thinking" : "");
-  div.innerHTML = `<div class="bubble"></div>`;
-  div.querySelector(".bubble").textContent = text;
-  messages.appendChild(div);
-  messages.scrollTop = messages.scrollHeight;
-  return div;
+// Filter definitions — order = display order, grouped by section.
+const FILTER_SECTIONS = [
+  {
+    title: "Species",
+    fields: [
+      { id: "common", label: "Common name", type: "text", placeholder: "e.g. maple" },
+      { id: "latin", label: "Scientific name", type: "text", placeholder: "e.g. Acer" },
+      { id: "family", label: "Family", type: "select", optionsKey: "species_family" },
+      { id: "functional_type", label: "Functional type", type: "select", optionsKey: "species_functional_type" },
+      { id: "mature_size", label: "Mature size", type: "select", options: ["Small", "Medium", "Large"] },
+      { id: "native", label: "Native", type: "select", options: ["Yes", "No"] },
+    ],
+  },
+  {
+    title: "Health",
+    fields: [
+      { id: "condition", label: "Condition", type: "select", options: ["Good", "Fair", "Poor", "Dead"] },
+      { id: "diameter", label: "Diameter (inches)", type: "range" },
+    ],
+  },
+  {
+    title: "Location",
+    fields: [
+      { id: "neighborhood", label: "Neighborhood", type: "select", optionsKey: "priority_neighborhood_name" },
+      { id: "council_district", label: "Council district", type: "select", optionsKey: "council_district" },
+      { id: "park_name", label: "Park", type: "select", optionsKey: "park_name" },
+      { id: "prop_type", label: "Property type", type: "select", optionsKey: "prop_type" },
+    ],
+  },
+  {
+    title: "Site",
+    fields: [
+      { id: "site_type", label: "Site type", type: "select", optionsKey: "site_type" },
+      { id: "site_size", label: "Site size", type: "select", optionsKey: "site_size" },
+      { id: "height", label: "Tree height", type: "select", optionsKey: "tree_height" },
+      { id: "canopy_spread", label: "Canopy spread", type: "select", optionsKey: "can_spread" },
+      { id: "wires", label: "Wires", type: "select", optionsKey: "wires" },
+    ],
+  },
+  {
+    title: "Provenance",
+    fields: [
+      { id: "program", label: "Planting program", type: "select", optionsKey: "program" },
+      { id: "planting_year", label: "Planted year", type: "range" },
+    ],
+  },
+  {
+    title: "Status",
+    fields: [
+      { id: "status", label: "Status (default: Active only)", type: "select", optionsKey: "status" },
+      { id: "heritage", label: "Heritage trees only", type: "checkbox" },
+    ],
+  },
+];
+
+let filterOptions = null; // unique values per field, computed once
+
+function buildFilterOptions(features) {
+  const map = {};
+  const collect = (key) => {
+    const set = new Set();
+    for (const f of features) {
+      const v = pick(f.properties, key);
+      if (v) set.add(String(v));
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  };
+  const keys = ["species_family", "species_functional_type", "priority_neighborhood_name",
+                "council_district", "park_name", "prop_type", "site_type", "site_size",
+                "tree_height", "can_spread", "wires", "program", "status"];
+  for (const k of keys) map[k] = collect(k);
+  return map;
 }
 
-composer.addEventListener("submit", async (e) => {
+function renderFilterUI() {
+  const container = document.getElementById("filter-controls");
+  if (!container) return;
+
+  container.innerHTML = FILTER_SECTIONS.map((sec, idx) => `
+    <div class="filter-section ${idx > 0 ? "collapsed" : ""}" data-section="${idx}">
+      <h3 class="filter-section-title">${sec.title}</h3>
+      <div class="filter-section-body">
+        ${sec.fields.map((f) => renderField(f)).join("")}
+      </div>
+    </div>
+  `).join("");
+
+  // Toggle section collapse
+  container.querySelectorAll(".filter-section-title").forEach((title) => {
+    title.addEventListener("click", () => {
+      title.parentElement.classList.toggle("collapsed");
+    });
+  });
+}
+
+function renderField(f) {
+  if (f.type === "text") {
+    return `
+      <div class="filter-row">
+        <label for="f-${f.id}">${f.label}</label>
+        <input class="filter-input" id="f-${f.id}" type="text" placeholder="${f.placeholder || ""}" autocomplete="off" />
+      </div>`;
+  }
+  if (f.type === "select") {
+    const opts = f.options || (f.optionsKey && filterOptions?.[f.optionsKey]) || [];
+    const optionsHtml = ['<option value="">Any</option>']
+      .concat(opts.map((o) => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`))
+      .join("");
+    return `
+      <div class="filter-row">
+        <label for="f-${f.id}">${f.label}</label>
+        <select class="filter-select" id="f-${f.id}">${optionsHtml}</select>
+      </div>`;
+  }
+  if (f.type === "range") {
+    return `
+      <div class="filter-row">
+        <label>${f.label}</label>
+        <div class="filter-range">
+          <input class="filter-input" id="f-${f.id}-min" type="number" placeholder="min" />
+          <span>–</span>
+          <input class="filter-input" id="f-${f.id}-max" type="number" placeholder="max" />
+        </div>
+      </div>`;
+  }
+  if (f.type === "checkbox") {
+    return `
+      <div class="filter-row">
+        <label class="filter-checkbox">
+          <input type="checkbox" id="f-${f.id}" />
+          <span>${f.label}</span>
+        </label>
+      </div>`;
+  }
+  return "";
+}
+
+function readFilterForm() {
+  const filter = {};
+  const get = (id) => document.getElementById(`f-${id}`)?.value?.trim();
+  if (get("common")) filter.common = get("common");
+  if (get("latin")) filter.latin = get("latin");
+  if (get("family")) filter.family = get("family");
+  if (get("functional_type")) filter.functional_type = get("functional_type");
+  if (get("mature_size")) filter.mature_size = get("mature_size");
+  if (get("native")) filter.native = get("native");
+  if (get("condition")) filter.condition = get("condition");
+  const diaMin = Number(document.getElementById("f-diameter-min")?.value);
+  const diaMax = Number(document.getElementById("f-diameter-max")?.value);
+  if (isFinite(diaMin) && diaMin > 0) filter.diameter_min = diaMin;
+  if (isFinite(diaMax) && diaMax > 0) filter.diameter_max = diaMax;
+  if (get("neighborhood")) filter.neighborhood = get("neighborhood");
+  if (get("council_district")) filter.council_district = get("council_district");
+  if (get("park_name")) filter.park_name = get("park_name");
+  if (get("prop_type")) filter.prop_type = get("prop_type");
+  if (get("site_type")) filter.site_type = get("site_type");
+  if (get("site_size")) filter.site_size = get("site_size");
+  if (get("height")) filter.height = get("height");
+  if (get("canopy_spread")) filter.canopy_spread = get("canopy_spread");
+  if (get("wires")) filter.wires = get("wires");
+  if (get("program")) filter.program = get("program");
+  const yMin = Number(document.getElementById("f-planting_year-min")?.value);
+  const yMax = Number(document.getElementById("f-planting_year-max")?.value);
+  if (isFinite(yMin) && yMin > 0) filter.planting_year_min = yMin;
+  if (isFinite(yMax) && yMax > 0) filter.planting_year_max = yMax;
+  if (get("status")) filter.status = get("status");
+  if (document.getElementById("f-heritage")?.checked) filter.heritage = "Yes";
+  return filter;
+}
+
+function writeFilterForm(filter) {
+  const set = (id, val) => {
+    const el = document.getElementById(`f-${id}`);
+    if (el) el.value = val ?? "";
+  };
+  set("common", filter.common);
+  set("latin", filter.latin);
+  set("family", filter.family);
+  set("functional_type", filter.functional_type);
+  set("mature_size", filter.mature_size);
+  set("native", filter.native);
+  set("condition", filter.condition);
+  set("diameter-min", filter.diameter_min);
+  set("diameter-max", filter.diameter_max);
+  set("neighborhood", filter.neighborhood);
+  set("council_district", filter.council_district);
+  set("park_name", filter.park_name);
+  set("prop_type", filter.prop_type);
+  set("site_type", filter.site_type);
+  set("site_size", filter.site_size);
+  set("height", filter.height);
+  set("canopy_spread", filter.canopy_spread);
+  set("wires", filter.wires);
+  set("program", filter.program);
+  set("planting_year-min", filter.planting_year_min);
+  set("planting_year-max", filter.planting_year_max);
+  set("status", filter.status);
+  const h = document.getElementById("f-heritage");
+  if (h) h.checked = !!filter.heritage;
+}
+
+function clearFilterForm() {
+  writeFilterForm({});
+}
+
+function updateFilterSummary(filter, count) {
+  const el = document.getElementById("filter-summary");
+  if (!el) return;
+  const parts = Object.keys(filter).filter((k) => filter[k]);
+  if (parts.length === 0) {
+    el.textContent = `${count.toLocaleString()} active trees`;
+  } else {
+    el.textContent = `${count.toLocaleString()} match · ${parts.length} filter${parts.length === 1 ? "" : "s"}`;
+  }
+}
+
+// Filter panel open/close + button events
+const filterPanel = document.getElementById("filter-panel");
+const filterToggle = document.getElementById("filter-toggle");
+const filterClose = document.getElementById("filter-close");
+const filterApply = document.getElementById("filter-apply");
+const filterClear = document.getElementById("filter-clear");
+const filterAiForm = document.getElementById("filter-ai-form");
+const filterAiInput = document.getElementById("filter-ai-input");
+const filterAiSubmit = document.getElementById("filter-ai-submit");
+const filterAiResult = document.getElementById("filter-ai-result");
+
+filterToggle?.addEventListener("click", () => {
+  insightsPanel?.classList.remove("open");
+  filterPanel.classList.toggle("open");
+});
+filterClose?.addEventListener("click", () => filterPanel.classList.remove("open"));
+
+filterApply?.addEventListener("click", () => {
+  const filter = readFilterForm();
+  const fn = Object.keys(filter).length ? buildFilterFn(filter) : null;
+  applyFilter(fn);
+  const count = fn ? allFeatures.filter(fn).length : currentFeatures.length;
+  updateFilterSummary(filter, count);
+});
+
+filterClear?.addEventListener("click", () => {
+  clearFilterForm();
+  applyFilter(null);
+  filterAiResult.textContent = "";
+  filterAiResult.classList.remove("error");
+  updateFilterSummary({}, currentFeatures.length);
+});
+
+filterAiForm?.addEventListener("submit", async (e) => {
   e.preventDefault();
-  const q = promptInput.value.trim();
+  const q = filterAiInput.value.trim();
   if (!q) return;
-  promptInput.value = "";
-  addMessage("user", q);
-  const thinking = addMessage("assistant", "thinking…", { thinking: true });
+  filterAiSubmit.disabled = true;
+  filterAiResult.classList.remove("error");
+  filterAiResult.textContent = "Thinking…";
 
   try {
     const res = await fetch(CHAT_API, {
@@ -574,7 +838,6 @@ composer.addEventListener("submit", async (e) => {
       headers: { "Content-Type": "application/json", "X-App-Password": appPassword },
       body: JSON.stringify({ question: q, context: dataContext }),
     });
-
     if (res.status === 401) {
       localStorage.removeItem(AUTH_KEY);
       location.reload();
@@ -583,29 +846,32 @@ composer.addEventListener("submit", async (e) => {
     if (!res.ok) throw new Error(`Chat API: ${res.status}`);
     const data = await res.json();
 
-    thinking.remove();
-    const fn = buildFilterFn(data.filter || {});
+    const filter = data.filter || {};
+    writeFilterForm(filter);
+    const fn = Object.keys(filter).length ? buildFilterFn(filter) : null;
     applyFilter(fn);
-    const count = allFeatures.filter(fn).length;
-
+    const count = fn ? allFeatures.filter(fn).length : currentFeatures.length;
     let summary = data.summary || "Filtered.";
     summary = summary.replace(/\{count\}/gi, count.toLocaleString());
-    if (count === 0) {
-      summary = "No trees match that filter. Try something broader like 'oaks' or 'trees in Sellwood'.";
+    if (count === 0 && Object.keys(filter).length) {
+      summary = "No trees match. Try broader terms.";
     }
-    addMessage("assistant", summary);
+    filterAiResult.textContent = summary;
+    updateFilterSummary(filter, count);
   } catch (err) {
-    thinking.remove();
-    addMessage("assistant", "Couldn't reach the AI. Check your connection and try again.");
+    filterAiResult.classList.add("error");
+    filterAiResult.textContent = "Couldn't reach the AI. Check your connection.";
+  } finally {
+    filterAiSubmit.disabled = false;
   }
 });
-
-const ciIncl = (a, b) => String(a || "").toLowerCase().includes(String(b || "").toLowerCase());
-const ciEq = (a, b) => String(a || "").toLowerCase().trim() === String(b || "").toLowerCase().trim();
 
 function buildFilterFn(filter) {
   return (f) => {
     const p = f.properties;
+    // Default base filter: hide non-active unless the user explicitly filters by status.
+    if (!filter.status && !isActiveTree(p)) return false;
+    if (filter.status && !ciIncl(pick(p, "status"), filter.status)) return false;
     if (filter.common && !ciIncl(pick(p, "species_common", "common"), filter.common)) return false;
     if (filter.latin && !ciIncl(pick(p, "species_latin", "latin"), filter.latin)) return false;
     if (filter.family && !ciIncl(pick(p, "species_family", "family"), filter.family)) return false;
@@ -629,7 +895,7 @@ function buildFilterFn(filter) {
     const fy = Number(pick(p, "planting_fy"));
     if (filter.planting_year_min != null && (isFinite(fy) ? fy : 0) < filter.planting_year_min) return false;
     if (filter.planting_year_max != null && (isFinite(fy) ? fy : 9999) > filter.planting_year_max) return false;
-    if (filter.heritage && !ciEq(pick(p, "ht_status", "heritage"), filter.heritage)) return false;
+    if (filter.heritage && !isHeritage(p)) return false;
     return true;
   };
 }
@@ -652,6 +918,7 @@ const insightsPanel = document.getElementById("insights-panel");
 const insightsToggle = document.getElementById("insights-toggle");
 const insightsClose = document.getElementById("insights-close");
 insightsToggle?.addEventListener("click", () => {
+  document.getElementById("filter-panel")?.classList.remove("open");
   insightsPanel.classList.toggle("open");
   if (insightsPanel.classList.contains("open")) updateInsights(currentFeatures);
 });
@@ -681,6 +948,16 @@ function renderBars(elId, entries, total) {
 
 function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function formatDate(v) {
+  if (!v) return null;
+  // ArcGIS returns dates as epoch ms. Strings already formatted are fine too.
+  const n = Number(v);
+  if (isFinite(n) && n > 0) {
+    try { return new Date(n).toISOString().slice(0, 10); } catch { return String(v); }
+  }
+  return String(v);
 }
 
 function updateInsights(features) {
@@ -736,6 +1013,14 @@ function updateInsights(features) {
 
   renderBars("bars-program", topN(countBy("program"), 10), total);
   renderBars("bars-wires", topN(countBy("wires"), 5), total);
+
+  // Status uses the FULL dataset so user can see what's hidden by the default filter
+  const allStatusMap = new Map();
+  for (const f of allFeatures) {
+    const v = pick(f.properties, "status");
+    if (v) allStatusMap.set(v, (allStatusMap.get(v) || 0) + 1);
+  }
+  renderBars("bars-status", topN(allStatusMap, 8), allFeatures.length);
 
   // Subtitle
   document.getElementById("insights-subtitle").textContent =
@@ -819,6 +1104,7 @@ function closeTimeMachine() {
 function applyTimeMachine(year) {
   tmYear.textContent = year;
   const fn = (f) => {
+    if (!isActiveTree(f.properties)) return false;
     const fy = Number(pick(f.properties, "planting_fy"));
     return isFinite(fy) && fy > 0 && fy <= year;
   };
@@ -836,15 +1122,20 @@ map.on("load", async () => {
   await ensureAuth();
   try {
     allFeatures = await loadTrees();
-    currentFeatures = allFeatures;
+    // Apply the default base filter so initial map view excludes proposed/vacant/etc.
+    const activeFeatures = allFeatures.filter(defaultBaseFilter);
+    currentFeatures = activeFeatures;
     dataContext = buildDataContext(allFeatures);
+    filterOptions = buildFilterOptions(allFeatures);
+    renderFilterUI();
     console.log("[Deep Forest] Built data context:", dataContext);
-    addLayers(allFeatures);
-    updateStats(allFeatures);
-    // Update brand subtitle with real tree count
+    addLayers(activeFeatures);
+    updateStats(activeFeatures);
+    // Update brand subtitle with active tree count
     const sub = document.querySelector(".brand-text .sub");
-    if (sub) sub.textContent = `Portland · ${allFeatures.length.toLocaleString()} trees`;
+    if (sub) sub.textContent = `Portland · ${activeFeatures.length.toLocaleString()} active trees`;
     document.getElementById("loader").classList.add("hidden");
+    updateFilterSummary({}, activeFeatures.length);
   } catch (err) {
     console.error(err);
     document.getElementById("loader").innerHTML =
